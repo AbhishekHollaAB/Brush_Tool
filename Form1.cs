@@ -1,13 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.Eventing.Reader;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Threading;
 using System.Windows.Forms;
 using OpenCvSharp;
 using OpenCvSharp.Extensions;
-
+using OpenCvSharp.XImgProc;
 
 namespace Brush_Tool
 {
@@ -25,12 +25,15 @@ namespace Brush_Tool
         Mat imgMainCopy = new Mat();
         Mat blackImg = new Mat();
         Mat binaryMask = new Mat();
+        Mat thinningControl = new Mat();
+        Mat thinningControlCopy = new Mat();
 
         int idx = 0;
         int actualX = 0;
         int actualY = 0;
         int polygonX = 0;
         int polygonY = 0;
+        int classIndex = 0;
 
         List<string> yoloText = new List<string>();
         string[] folderContents;
@@ -40,20 +43,33 @@ namespace Brush_Tool
         bool draw = true;
         bool IsMouseDown = false;
         bool forPolygon = false;
+        bool forClassChange = false;
+        bool forPolygonWidth = false;
+        bool resetScale = true;
 
         OpenCvSharp.Point StartLocation;
         OpenCvSharp.Point polygonPoint;
         List<OpenCvSharp.Point[]> lastSetPoints = new List<OpenCvSharp.Point[]>();
+        List<string> classLabels = new List<string>();
 
         Pen drawingPen;
         Graphics pictureBoxGraphics;
+
+        List<Scalar> classColors = new List<Scalar> {
+        Scalar.Green, Scalar.Blue, Scalar.Orange, Scalar.Purple, Scalar.Pink, Scalar.Yellow, Scalar.Red, Scalar.Brown, Scalar.BlanchedAlmond, Scalar.Beige,
+        Scalar.Cyan, Scalar.Magenta, Scalar.Lime, Scalar.Maroon, Scalar.SpringGreen, Scalar.Teal, Scalar.Aquamarine, Scalar.Azure, Scalar.DarkRed, Scalar.DarkOrange
+        };
+       
 
         private void btn_browseFolder_Click(object sender, EventArgs e)
         {
             DialogResult result = folderBrowserDialog1.ShowDialog();
             if (result == DialogResult.OK)
             {
-                folderContents = Directory.GetFileSystemEntries(folderBrowserDialog1.SelectedPath, "*.jpg");
+                string[] pngFiles = Directory.GetFileSystemEntries(folderBrowserDialog1.SelectedPath, "*.png");
+                string[] jpgFiles = Directory.GetFileSystemEntries(folderBrowserDialog1.SelectedPath, "*.jpg");
+                folderContents = pngFiles.Concat(jpgFiles).ToArray();
+                //folderContents = Directory.GetFileSystemEntries(folderBrowserDialog1.SelectedPath, "*.png");
                 tb_outputPath.Text = folderBrowserDialog1.SelectedPath;
                 fileName = Path.GetFileName(folderContents[idx]);
                 outFilename = fileName.Remove(fileName.Length - 4);
@@ -77,7 +93,8 @@ namespace Brush_Tool
                 blackImg = new Mat(imgMain.Rows, imgMain.Cols, MatType.CV_8UC1, Scalar.Black);
                 binaryMask = new Mat(imgMain.Rows, imgMain.Cols, MatType.CV_8UC1, Scalar.Black);
                 pb_imgDisplay.Image = imgMain.ToBitmap();
-                pb_imgDisplay.SizeMode = PictureBoxSizeMode.AutoSize;
+                //pb_imgDisplay.SizeMode = PictureBoxSizeMode.AutoSize;
+                pb_imgDisplay.SizeMode = PictureBoxSizeMode.StretchImage;
             }
         }
 
@@ -114,7 +131,8 @@ namespace Brush_Tool
                 blackImg = new Mat(imgMain.Rows, imgMain.Cols, MatType.CV_8UC1, Scalar.Black);
                 binaryMask = new Mat(imgMain.Rows, imgMain.Cols, MatType.CV_8UC1, Scalar.Black);
                 pb_imgDisplay.Image = imgMain.ToBitmap();
-                pb_imgDisplay.SizeMode = PictureBoxSizeMode.AutoSize;
+                //pb_imgDisplay.SizeMode = PictureBoxSizeMode.AutoSize;
+                pb_imgDisplay.SizeMode = PictureBoxSizeMode.StretchImage;
             }
         }
 
@@ -152,7 +170,8 @@ namespace Brush_Tool
                 blackImg = new Mat(imgMain.Rows, imgMain.Cols, MatType.CV_8UC1, Scalar.Black);
                 binaryMask = new Mat(imgMain.Rows, imgMain.Cols, MatType.CV_8UC1, Scalar.Black);
                 pb_imgDisplay.Image = imgMain.ToBitmap();
-                pb_imgDisplay.SizeMode = PictureBoxSizeMode.AutoSize;
+                //pb_imgDisplay.SizeMode = PictureBoxSizeMode.AutoSize;
+                pb_imgDisplay.SizeMode = PictureBoxSizeMode.StretchImage;
             }
         }
 
@@ -199,6 +218,94 @@ namespace Brush_Tool
                 btn_ReadAnnot.PerformClick();
                 btn_ReadAnnot.PerformClick();
             }
+            if (forClassChange)
+            {
+                polygonPoint = new OpenCvSharp.Point(e.X, e.Y);
+                double scaleX = (double)imgMain.Width / pb_imgDisplay.Size.Width;
+                double scaleY = (double)imgMain.Height / pb_imgDisplay.Size.Height;
+                polygonX = (int)(e.X * scaleX);
+                polygonY = (int)(e.Y * scaleY);
+
+                List<string> modifiedLines = new List<string>();
+                string[] lines = File.ReadAllLines(folderBrowserDialog1.SelectedPath + "\\" + outFilename + ".txt");
+                foreach (string line in lines)
+                {
+                    string[] values = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    int classID = int.Parse(values[0]);
+                    values = values.Skip(1).ToArray();
+                    List<OpenCvSharp.Point> allPointsIn = new List<OpenCvSharp.Point>();
+
+                    for (int i = 0; i < values.Length; i += 2)
+                    {
+                        int xVal = (int)(Convert.ToDouble(values[i]) * imgMain.Width);
+                        int yVal = (int)(Convert.ToDouble(values[i + 1]) * imgMain.Height);
+                        allPointsIn.Add(new OpenCvSharp.Point(xVal, yVal));
+                    }
+
+                    OpenCvSharp.Point testPoint = new OpenCvSharp.Point(polygonX, polygonY);
+                    bool isInside = PolygonHelper.IsPointInside(testPoint, allPointsIn);
+                    if (isInside)
+                    {
+                        classID = classIndex;
+                        string modifiedLine = classID.ToString() + " " + string.Join(" ", values);
+                    }
+                    else
+                    {
+                        modifiedLines.Add(line);
+                    }
+                }
+                File.WriteAllLines(folderBrowserDialog1.SelectedPath + "\\" + outFilename + ".txt", modifiedLines);
+                btn_ReadAnnot.PerformClick();
+                btn_ReadAnnot.PerformClick();
+            }
+            if (forPolygonWidth)
+            {
+                polygonPoint = new OpenCvSharp.Point(e.X, e.Y);
+                if (forPolygonWidth)
+                {
+                    double scaleX = (double)imgMain.Width / pb_imgDisplay.Size.Width;
+                    double scaleY = (double)imgMain.Height / pb_imgDisplay.Size.Height;
+                    polygonX = (int)(polygonPoint.X * scaleX);
+                    polygonY = (int)(polygonPoint.Y * scaleY);
+
+                    string[] lines = File.ReadAllLines(folderBrowserDialog1.SelectedPath + "\\" + outFilename + ".txt");
+                    List<string> modifiedLines = new List<string>();
+
+                    foreach (string line in lines)
+                    {
+                        string[] values = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        int classID = int.Parse(values[0]);
+                        values = values.Skip(1).ToArray();
+
+                        List<OpenCvSharp.Point> polygonPoints = new List<OpenCvSharp.Point>();
+                        foreach (var i in Enumerable.Range(0, values.Length / 2))
+                        {
+                            int xVal = (int)(Convert.ToDouble(values[i * 2]) * imgMain.Width);
+                            int yVal = (int)(Convert.ToDouble(values[i * 2 + 1]) * imgMain.Height);
+                            polygonPoints.Add(new OpenCvSharp.Point(xVal, yVal));
+                        }
+
+                        OpenCvSharp.Point testPoint = new OpenCvSharp.Point(polygonX, polygonY);
+                        bool isInside = PolygonHelper.IsPointInside(testPoint, polygonPoints);
+
+                        if (isInside)
+                        {
+                            thinningControl = new Mat(imgMain.Rows, imgMain.Cols, MatType.CV_8UC1, Scalar.Black);
+                            List<OpenCvSharp.Point[]> polygons = new List<OpenCvSharp.Point[]>() { polygonPoints.ToArray() };
+                            Cv2.FillPoly(thinningControl, polygons, Scalar.White);
+                            //CvXImgProc.Thinning(thinningControl, thinningControl, ThinningTypes.GUOHALL);
+                        }
+                        else
+                        {
+                            modifiedLines.Add(line);
+                        }
+                    }
+
+                    //File.WriteAllLines(folderBrowserDialog1.SelectedPath + "\\" + outFilename + ".txt", modifiedLines);
+                    //btn_ReadAnnot.PerformClick();
+                    //btn_ReadAnnot.PerformClick();
+                }
+            }
         }
 
         private void pb_imgDisplay_MouseMove(object sender, MouseEventArgs e)
@@ -215,12 +322,8 @@ namespace Brush_Tool
                     double scaleY = (double)imgMain.Height / pb_imgDisplay.Size.Height;
                     actualX = (int)(e.X * scaleX);
                     actualY = (int)(e.Y * scaleY);
-                    if (rb_lowCrack.Checked)
-                        Cv2.Circle(imgMain, new OpenCvSharp.Point(actualX, actualY), (int)nud_brushSize.Value, Scalar.Green, -1);
-                    else if (rb_modCrack.Checked)
-                        Cv2.Circle(imgMain, new OpenCvSharp.Point(actualX, actualY), (int)nud_brushSize.Value, Scalar.Yellow, -1);
-                    else if (rb_highCrack.Checked)
-                        Cv2.Circle(imgMain, new OpenCvSharp.Point(actualX, actualY), (int)nud_brushSize.Value, Scalar.Red, -1);
+
+                    Cv2.Circle(imgMain, new OpenCvSharp.Point(actualX, actualY), (int)nud_brushSize.Value, classColors[classIndex], -1);
 
                     Cv2.Circle(blackImg, new OpenCvSharp.Point(actualX, actualY), (int)nud_brushSize.Value, Scalar.White, -1);
                     pb_imgDisplay.Image = imgMain.ToBitmap();
@@ -255,6 +358,9 @@ namespace Brush_Tool
                 draw = true;
                 btn_Brush.BackColor = Color.Green;
                 forPolygon = false;
+                forClassChange = false;
+                forPolygonWidth = false;
+                Cursor = Cursors.Default;
             }
             else
             {
@@ -273,54 +379,19 @@ namespace Brush_Tool
             this.Focus();
             pictureBoxGraphics = pb_imgDisplay.CreateGraphics();
             timer1.Start();
+            loadClasses();
         }
 
-        private void checkRadioButtonStatus()
-        {
-            if (rb_lowCrack.Checked)
-            {
-                nud_brushSize.Value = 4;
-                drawingPen = new Pen(Color.Green, (int)nud_brushSize.Value);
-            }
-            else if (rb_modCrack.Checked)
-            {
-                nud_brushSize.Value = 5;
-                drawingPen = new Pen(Color.Yellow, (int)nud_brushSize.Value);
-            }
-            else if (rb_highCrack.Checked)
-            {
-                nud_brushSize.Value = 6;
-                drawingPen = new Pen(Color.Red, (int)nud_brushSize.Value);
-            }
-        }
+   
 
-        private void rb_lowCrack_CheckedChanged(object sender, EventArgs e)
-        {
-            checkRadioButtonStatus();
-        }
-
-        private void rb_modCrack_CheckedChanged(object sender, EventArgs e)
-        {
-            checkRadioButtonStatus();
-        }
-
-        private void rb_highCrack_CheckedChanged(object sender, EventArgs e)
-        {
-            checkRadioButtonStatus();
-        }
 
         private void btn_saveSingle_Click(object sender, EventArgs e)
         {
             try
             {
                 string yoloTxtToWrite = "";
-                if (rb_lowCrack.Checked)
-                    yoloTxtToWrite = "0";
-                else if (rb_modCrack.Checked)
-                    yoloTxtToWrite = "1";
-                else if (rb_highCrack.Checked)
-                    yoloTxtToWrite = "2";
 
+                yoloTxtToWrite = classIndex.ToString();
                 Mat blackImgCopy = new Mat();
                 blackImg.CopyTo(blackImgCopy);
 
@@ -412,15 +483,6 @@ namespace Brush_Tool
                 case 's':
                     btn_saveFinalText.PerformClick();
                     break;
-                case 'z':
-                    rb_lowCrack.Checked = true;
-                    break;
-                case 'x':
-                    rb_modCrack.Checked = true;
-                    break;
-                case 'c':
-                    rb_highCrack.Checked = true;
-                    break;
                 case 't':
                     btn_ReadAnnot.PerformClick();
                     break;
@@ -439,6 +501,8 @@ namespace Brush_Tool
                     btn_Brush.Enabled = true;
                     btn_saveFinalText.Enabled = true;
                     btn_removePolygon.Enabled = true;
+                    btn_changeClass.Enabled = true;
+                    btn_polygonWidth.Enabled = true;
                 }
                 else
                 {
@@ -448,6 +512,8 @@ namespace Brush_Tool
                     btn_Brush.Enabled = false;
                     btn_saveFinalText.Enabled = false;
                     btn_removePolygon.Enabled = false;
+                    btn_changeClass.Enabled = false;
+                    btn_polygonWidth.Enabled = true;
                 }
             }
             catch (Exception exc)
@@ -482,15 +548,9 @@ namespace Brush_Tool
 
                         OpenCvSharp.Point[] pointsArray = pointsList.ToArray();
                         ListOfListOfPoint.Add(pointsList);
-                        if (classID == 0)
-                            Cv2.Polylines(imgMain, ListOfListOfPoint, true, Scalar.Green, 1);
-                        else if (classID == 1)
-                            Cv2.Polylines(imgMain, ListOfListOfPoint, true, Scalar.Orange, 1);
-                        else if (classID == 2)
-                            Cv2.Polylines(imgMain, ListOfListOfPoint, true, Scalar.Red, 1);
+                        
+                        Cv2.Polylines(imgMain, ListOfListOfPoint, true, classColors[classID], 1);
                     }
-                    //Cv2.NamedWindow("Out", WindowMode.Normal);
-                    //Cv2.ImShow("Out", imgMain);
                     pb_imgDisplay.Image = imgMain.ToBitmap();
                 }                
             }
@@ -516,8 +576,158 @@ namespace Brush_Tool
 
         private void btn_selectPolygon_Click(object sender, EventArgs e)
         {
-            btn_Brush.PerformClick();
+            Cursor = Cursors.No;
+            if (btn_Brush.BackColor == Color.Green)
+                btn_Brush.PerformClick();
             forPolygon = true;
+            forClassChange = false;
+            forPolygonWidth = false;
+        }
+
+        private void btn_changeClass_Click(object sender, EventArgs e)
+        {
+            Cursor = Cursors.Default;
+            forClassChange = true;
+            forPolygon = false;
+            forPolygonWidth = false;
+            if (btn_Brush.BackColor == Color.Green)
+            {
+                btn_Brush.PerformClick();
+            }
+        }
+
+        private void btn_polygonWidth_Click(object sender, EventArgs e)
+        {
+            forClassChange = false;
+            forPolygon = false;
+            forPolygonWidth = true;
+            trBr_Scale.Value = 0;
+            resetScale = false;
+            if (btn_Brush.BackColor == Color.Green)
+            {
+                btn_Brush.PerformClick();
+            }
+        }
+
+        private void setScale()
+        {
+            OpenCvSharp.Point[][] points;
+            HierarchyIndex[] indices;
+            Cv2.FindContours(thinningControlCopy, out points, out indices, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+            OpenCvSharp.Point[] finalPoints = points[0];
+
+            string[] lines = File.ReadAllLines(folderBrowserDialog1.SelectedPath + "\\" + outFilename + ".txt");
+            List<string> modifiedLines = new List<string>();
+
+            foreach (string line in lines)
+            {
+                string[] values = line.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                int classID = int.Parse(values[0]);
+                values = values.Skip(1).ToArray();
+
+                List<OpenCvSharp.Point> polygonPoints = new List<OpenCvSharp.Point>();
+                foreach (var i in Enumerable.Range(0, values.Length / 2))
+                {
+                    int xVal = (int)(Convert.ToDouble(values[i * 2]) * imgMain.Width);
+                    int yVal = (int)(Convert.ToDouble(values[i * 2 + 1]) * imgMain.Height);
+                    polygonPoints.Add(new OpenCvSharp.Point(xVal, yVal));
+                }
+
+                OpenCvSharp.Point testPoint = new OpenCvSharp.Point(polygonX, polygonY);
+                bool isInside = PolygonHelper.IsPointInside(testPoint, polygonPoints);
+
+                if (isInside)
+                {
+                    string modifiedLine = classID.ToString();
+                    foreach (var finalPoint in finalPoints)
+                    {
+                        int pixelX = finalPoint.X;
+                        int pixelY = finalPoint.Y;
+                        double finalX = (double)pixelX / imgMain.Width;
+                        double finalY = (double)pixelY / imgMain.Height;
+
+                        modifiedLine = modifiedLine + " " + finalX.ToString() + " " + finalY.ToString();
+                    }
+                    modifiedLines.Add(modifiedLine);
+                }
+                else
+                {
+                    modifiedLines.Add(line);
+                }
+            }
+            File.WriteAllLines(folderBrowserDialog1.SelectedPath + "\\" + outFilename + ".txt", modifiedLines);
+            btn_ReadAnnot.PerformClick();
+            btn_ReadAnnot.PerformClick();
+        }
+
+        private void trBr_Scale_Scroll(object sender, EventArgs e)
+        {
+            if (resetScale == false)
+            {
+                thinningControl.CopyTo(thinningControlCopy);
+                int nudValue = (int)trBr_Scale.Value;
+                Mat element = Cv2.GetStructuringElement(MorphShapes.Rect, new OpenCvSharp.Size(3, 3));
+                if (nudValue > 0)
+                {
+                    Cv2.Dilate(thinningControl, thinningControlCopy, element, iterations: nudValue);
+                }
+                else if (nudValue < 0)
+                {
+                    Cv2.Erode(thinningControl, thinningControlCopy, element, iterations: Math.Abs(nudValue));
+                }
+                setScale();
+            }
+        }
+
+        private void saveClasses()
+        {
+            List<string> items = cmb_newClass.Items.Cast<string>().ToList();
+            File.WriteAllLines("classes.txt", items);
+        }
+
+        private void loadClasses()
+        {
+            if (File.Exists("classes.txt"))
+            {
+                var lines = File.ReadAllLines("classes.txt");
+                cmb_newClass.Items.AddRange(lines);
+            }
+        }
+
+        private void btn_AddClass_Click(object sender, EventArgs e)
+        {
+            string newClass = tb_addNewClass.Text;
+            if (!cmb_newClass.Items.Contains(newClass))
+            {
+                cmb_newClass.Items.Add(newClass);
+                saveClasses();
+                tb_addNewClass.Clear();
+            }
+        }
+
+        private void btn_deleteClass_Click(object sender, EventArgs e)
+        {
+            if (cmb_newClass.SelectedItem != null)
+            {
+                cmb_newClass.Items.Remove(cmb_newClass.SelectedItem);
+                saveClasses();
+            }
+        }
+
+        public static Color scalarToColor(Scalar scalar)
+        {
+            return Color.FromArgb(
+                255,
+                (int)scalar.Val2,
+                (int)scalar.Val1,
+                (int)scalar.Val0
+                );
+        }
+
+        private void cmb_newClass_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            classIndex = cmb_newClass.SelectedIndex;
+            drawingPen = new Pen(scalarToColor(classColors[classIndex]), (int)nud_brushSize.Value);
         }
     }
 
